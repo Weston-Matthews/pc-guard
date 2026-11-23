@@ -1,0 +1,10 @@
+#!/bin/sh
+# Mark that a bot woke this PC, so the watcher can put it back to sleep
+# once it is idle and no model has been loaded for the configured period.
+set -e
+DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pc-guard"
+mkdir -p "$DIR"
+chmod 700 "$DIR"
+STAMP=$(date --iso-8601=seconds)
+echo "$STAMP" > "$DIR/woken-by-bot"
+echo "Wrote $DIR/woken-by-bot ($STAMP)"

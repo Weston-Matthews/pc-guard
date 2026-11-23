@@ -1,0 +1,52 @@
+# Copy to pc-guard.conf next to these files, or to
+# ~/.config/pc-guard/pc-guard.conf. Environment variables of the form
+# PC_GUARD_<KEY> override values in this file.
+#
+# Do not put tokens, passwords, or keys in this file if you will share it.
+# The optional mark-woken token belongs in a 0600 EnvironmentFile instead.
+
+# Seconds of keyboard/mouse inactivity required before the PC is "not busy".
+idle_minutes=15
+
+# GPU utilization (percent) that counts as busy when it is not from a local model.
+gpu_util_threshold=15
+
+# Per-process VRAM (MB) that counts as busy for a non-model, non-desktop process.
+gpu_vram_busy_mb=512
+
+# After a bot wake, wait this long with no model loaded before auto-suspend.
+model_idle_before_sleep_minutes=10
+
+# How often the watcher re-checks status, in seconds.
+watch_interval_seconds=20
+
+status_port=8743
+
+# Comma-separated bind list. "tailscale" is resolved at runtime to the
+# current Tailscale IPv4 address. Always include 127.0.0.1 for local tools.
+# To bind a LAN interface instead, list that IPv4 explicitly — do not use 0.0.0.0
+# unless you also add authentication and a firewall.
+bind=127.0.0.1,tailscale
+
+# Local model API. model_backend is one of: ollama, llamacpp, both, none.
+ollama_host=http://127.0.0.1:11434
+llamacpp_url=http://127.0.0.1:8080
+model_backend=ollama
+
+# Optional command used instead of `ollama stop`. Receives model names as args.
+# unload_hook=/usr/local/bin/pc-guard-unload
+
+# GPU tool: auto, nvidia, amd, or none.
+gpu_backend=auto
+
+# Extra game cmdline regexes, comma-separated, merged with the built-in list.
+# game_patterns_extra=\bmygame\b
+
+# Extra process basenames to ignore when measuring GPU VRAM (comma or space).
+# desktop_gpu_names_extra=my-compositor
+
+# Used by scripts/sudo-setup.sh and scripts/wake-pc. Leave blank to detect
+# (interface) or to require the operator to set them (MAC / broadcast).
+# wol_interface=eth0
+# wake_mac=aa:bb:cc:dd:ee:ff
+# wake_broadcast=192.0.2.255

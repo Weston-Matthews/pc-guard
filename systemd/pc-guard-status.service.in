@@ -1,0 +1,24 @@
+[Unit]
+Description=PC guard status HTTP service (configured bind addresses only)
+After=network-online.target tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 @INSTALL_DIR@/status_server.py
+WorkingDirectory=@INSTALL_DIR@
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=PC_GUARD_CONFIG=@INSTALL_DIR@/pc-guard.conf
+# Optional 0600 file for PC_GUARD_WAKE_TOKEN (POST /mark-woken). The leading
+# "-" makes a missing file harmless.
+EnvironmentFile=-%h/.config/pc-guard/wake.env
+CPUQuota=20%
+MemoryMax=128M
+NoNewPrivileges=yes
+PrivateTmp=yes
+# Do not take a sleep inhibitor.
+
+[Install]
+WantedBy=default.target

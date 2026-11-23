@@ -1,0 +1,20 @@
+[Unit]
+Description=PC guard watcher (unload models if busy; sleep after bot wake)
+After=network-online.target pc-guard-status.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 @INSTALL_DIR@/watcher.py
+WorkingDirectory=@INSTALL_DIR@
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=PC_GUARD_CONFIG=@INSTALL_DIR@/pc-guard.conf
+CPUQuota=20%
+MemoryMax=128M
+NoNewPrivileges=yes
+PrivateTmp=yes
+# Do not take a sleep inhibitor. Must be able to call the unload command and systemctl.
+
+[Install]
+WantedBy=default.target

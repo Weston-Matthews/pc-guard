@@ -1,0 +1,22 @@
+#!/bin/sh
+# Create or remove the test flag that makes the watcher treat the PC as busy.
+# Usage: simulate-busy [on|off]
+set -e
+DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pc-guard"
+mkdir -p "$DIR"
+chmod 700 "$DIR"
+FLAG="$DIR/simulate-busy"
+case "${1:-on}" in
+  on|set|1)
+    date --iso-8601=seconds > "$FLAG"
+    echo "simulate-busy ON ($FLAG)"
+    ;;
+  off|clear|0)
+    rm -f "$FLAG"
+    echo "simulate-busy OFF"
+    ;;
+  *)
+    echo "Usage: $0 [on|off]" >&2
+    exit 2
+    ;;
+esac

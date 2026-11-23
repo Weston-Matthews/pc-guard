@@ -1,0 +1,49 @@
+#!/bin/sh
+# Send a Wake-on-LAN magic packet. Intended for an always-on machine on
+# the same LAN (for example a Raspberry Pi).
+#
+# Configure with environment variables or a conf file:
+#   WAKE_MAC / PC_GUARD_WAKE_MAC
+#   WAKE_BROADCAST / PC_GUARD_WAKE_BROADCAST  (for example 192.0.2.255)
+# Conf files searched if the env vars are unset:
+#   $PC_GUARD_CONFIG, /etc/pc-guard-wake.conf, ~/.config/pc-guard/pc-guard.conf
+set -e
+
+conf_get() {
+  key=$1
+  for f in \
+      ${PC_GUARD_CONFIG:-} \
+      /etc/pc-guard-wake.conf \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/pc-guard/pc-guard.conf"
+  do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      case $line in
+        ""|\#*) continue ;;
+      esac
+      k=${line%%=*}
+      v=${line#*=}
+      if [ "$k" = "$key" ]; then
+        printf '%s\n' "$v"
+        return 0
+      fi
+    done < "$f"
+  done
+  return 0
+}
+
+MAC=${WAKE_MAC:-${PC_GUARD_WAKE_MAC:-$(conf_get wake_mac)}}
+BROADCAST=${WAKE_BROADCAST:-${PC_GUARD_WAKE_BROADCAST:-$(conf_get wake_broadcast)}}
+
+if [ -z "$MAC" ] || [ -z "$BROADCAST" ]; then
+  echo "wake-pc: set WAKE_MAC and WAKE_BROADCAST (or wake_mac / wake_broadcast in a conf file)." >&2
+  exit 1
+fi
+
+if ! command -v wakeonlan >/dev/null 2>&1; then
+  echo "wakeonlan is not installed" >&2
+  exit 1
+fi
+
+echo "Sending Wake-on-LAN magic packet to the configured MAC via $BROADCAST"
+exec wakeonlan -i "$BROADCAST" "$MAC"

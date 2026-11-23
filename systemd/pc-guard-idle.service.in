@@ -1,0 +1,20 @@
+[Unit]
+Description=PC guard idle helper (KIdleTime)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@INSTALL_DIR@/idle_helper
+WorkingDirectory=@INSTALL_DIR@
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+@QT_PLATFORM_LINE@
+CPUQuota=10%
+MemoryMax=64M
+NoNewPrivileges=yes
+# Needs WAYLAND_DISPLAY or a working X11 display, inherited from the user systemd manager.
+
+[Install]
+WantedBy=default.target

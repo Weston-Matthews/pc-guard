@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.so
+logs/
+idle_helper
+pc-guard.conf
+.env
+*.env
+wake.env
+*~
+.DS_Store
