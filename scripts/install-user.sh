@@ -41,6 +41,13 @@ for unit in pc-guard-idle pc-guard-status pc-guard-watcher; do
       "$src" > "$UNIT_DIR/${unit}.service"
 done
 
+# Optional on-demand llama.cpp unit: installed, never enabled. pc-guard
+# starts it when llamacpp_unit=llama-server.service is set in pc-guard.conf.
+if [ -f "$INSTALL_DIR/systemd/llama-server.service.in" ] && [ ! -e "$UNIT_DIR/llama-server.service" ]; then
+  sed -e "s|@INSTALL_DIR@|$INSTALL_DIR|g" "$INSTALL_DIR/systemd/llama-server.service.in" > "$UNIT_DIR/llama-server.service"
+  echo "Installed $UNIT_DIR/llama-server.service (not enabled). See examples/llama-server.env.example."
+fi
+
 systemctl --user daemon-reload
 systemctl --user enable --now pc-guard-idle.service pc-guard-status.service pc-guard-watcher.service
 systemctl --user --no-pager --full status pc-guard-idle.service pc-guard-status.service pc-guard-watcher.service || true

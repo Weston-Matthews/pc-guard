@@ -8,11 +8,18 @@ no authentication.
 If PC_GUARD_WAKE_TOKEN is set, POST /mark-woken is also served and
 requires Authorization: Bearer <token>. On success it writes the
 woken-by-bot flag so the watcher can auto-suspend later.
+
+If the token is set and llamacpp_unit is configured, POST /llama/chat and
+POST /llama/stop are served with the same bearer token. /llama/chat refuses
+(409) when the PC is busy, unloads Ollama models to free VRAM, starts the
+llama-server unit on demand, waits for /health, and forwards the OpenAI
+chat body to llama-server's /v1/chat/completions.
 """
 
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import socket
 import sys
@@ -20,7 +27,9 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import pc_guard
 
@@ -28,6 +37,10 @@ BIND_RETRY_SEC = 5
 WAKE_TOKEN_ENV = "PC_GUARD_WAKE_TOKEN"
 MAX_BODY = 4096
 TAILSCALE_RETRY_SEC = 10
+LLAMA_MAX_BODY = 256 * 1024
+LLAMA_START_TIMEOUT = 300  # model load from disk can take a few minutes
+LLAMA_REQUEST_TIMEOUT = 600
+LLAMA_LOCK = threading.Lock()
 
 
 def _port() -> int:
@@ -91,8 +104,89 @@ class StatusHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):  # noqa: N802
         self._deny(405, "Method not allowed")
 
+    def _json(self, code: int, obj) -> None:
+        body = (json.dumps(obj) + "\n").encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _llama(self, path: str) -> None:
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > LLAMA_MAX_BODY:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "bad body length"})
+            return
+        raw = self.rfile.read(n) if n else b""
+        if not _auth_ok(self.headers.get("Authorization")):
+            self._json(401, {"ok": False, "error": "unauthorized"})
+            return
+        if not pc_guard.llamacpp_managed():
+            self._json(404, {"ok": False, "error": "llamacpp_unit is not configured"})
+            return
+        if path == "/llama/stop":
+            ok = pc_guard.stop_llama()
+            self._json(200 if ok else 500, {"ok": ok})
+            return
+        status = pc_guard.apply_bot_wake_grace(pc_guard.collect_status())
+        if status.get("reasons"):
+            self._json(409, {"ok": False, "error": "busy", "reasons": status.get("reasons")})
+            return
+        try:
+            json.loads(raw.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            self._json(400, {"ok": False, "error": "body must be JSON"})
+            return
+        if not LLAMA_LOCK.acquire(blocking=False):
+            self._json(409, {"ok": False, "error": "busy", "reasons": ["another llama job is running"]})
+            return
+        try:
+            if not pc_guard.llama_unit_active():
+                # Free VRAM first: an Ollama model can leave too little room.
+                if (pc_guard.config().model_backend or "").lower() in {"ollama", "both"}:
+                    for name in pc_guard.ollama_loaded_models():
+                        pc_guard.run(["ollama", "stop", name], timeout=30)
+                if not pc_guard.start_llama():
+                    self._json(503, {"ok": False, "error": "llama-server failed to start"})
+                    return
+            deadline = time.monotonic() + LLAMA_START_TIMEOUT
+            while not pc_guard.llama_health():
+                if time.monotonic() > deadline or not pc_guard.llama_unit_active():
+                    self._json(503, {"ok": False, "error": "llama-server not ready"})
+                    return
+                time.sleep(2)
+            url = pc_guard.config().llamacpp_url.rstrip("/") + "/v1/chat/completions"
+            req = Request(url, data=raw, method="POST", headers={"Content-Type": "application/json"})
+            try:
+                with urlopen(req, timeout=LLAMA_REQUEST_TIMEOUT) as resp:
+                    out = resp.read()
+                    code = getattr(resp, "status", 200)
+            except HTTPError as exc:
+                out, code = exc.read(), exc.code
+            except (URLError, TimeoutError, OSError):
+                self._json(502, {"ok": False, "error": "llama-server request failed"})
+                return
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(out)
+        finally:
+            LLAMA_LOCK.release()
+
     def do_POST(self):  # noqa: N802
         path = urlparse(self.path).path
+        if path in ("/llama/chat", "/llama/stop") and _wake_token():
+            self._llama(path)
+            return
         if path != "/mark-woken":
             self._deny(405, "Method not allowed")
             return

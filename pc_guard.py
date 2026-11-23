@@ -34,6 +34,9 @@ _CONF_KEYS = {
     "ollama_host",
     "llamacpp_url",
     "model_backend",
+    "llamacpp_unit",
+    "llamacpp_idle_stop_minutes",
+    "bot_wake_grace_minutes",
     "unload_hook",
     "wol_interface",
     "wake_mac",
@@ -58,6 +61,14 @@ class Config:
     ollama_host: str = "http://127.0.0.1:11434"
     llamacpp_url: str = "http://127.0.0.1:8080"
     model_backend: str = "ollama"  # ollama, llamacpp, both, none
+    # Optional systemd --user unit that runs llama-server on demand (see
+    # systemd/llama-server.service.in). Empty = pc-guard never starts/stops it.
+    llamacpp_unit: str = ""
+    # Stop the managed llama-server after this long with no request running.
+    llamacpp_idle_stop_minutes: float = 5
+    # After a bot wake, ignore "recent input" for this long if nobody has
+    # touched the PC since the wake (resume resets the idle timer). 0 = off.
+    bot_wake_grace_minutes: float = 20
     unload_hook: str = ""
     wol_interface: str = ""
     wake_mac: str = ""
@@ -812,13 +823,104 @@ def llamacpp_loaded_models() -> list[str]:
     return []
 
 
+def llamacpp_managed() -> bool:
+    return bool((config().llamacpp_unit or "").strip())
+
+
+def llama_unit_active() -> bool:
+    """True if the managed llama-server unit is active or starting."""
+    unit = (config().llamacpp_unit or "").strip()
+    if not unit:
+        return False
+    _code, out, _ = run(["systemctl", "--user", "is-active", unit], timeout=5)
+    return out.strip() in {"active", "activating", "reloading"}
+
+
+def llama_health() -> bool:
+    """True once llama-server answers GET /health with 200 (model loaded)."""
+    url = config().llamacpp_url.rstrip("/")
+    try:
+        with urlopen(Request(url + "/health", method="GET"), timeout=3) as resp:
+            resp.read()
+            return getattr(resp, "status", 200) == 200
+    except (URLError, TimeoutError, OSError, ValueError):
+        return False
+
+
+def llama_processing() -> bool | None:
+    """True if any llama-server slot is working; None if unknown/loading."""
+    url = config().llamacpp_url.rstrip("/")
+    try:
+        with urlopen(Request(url + "/slots", method="GET"), timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, list):
+        return None
+    return any(bool(s.get("is_processing")) for s in data if isinstance(s, dict))
+
+
+def start_llama() -> bool:
+    unit = (config().llamacpp_unit or "").strip()
+    if not unit:
+        return False
+    run(["systemctl", "--user", "reset-failed", unit], timeout=10)
+    code, _, _ = run(["systemctl", "--user", "start", unit], timeout=30)
+    return code == 0
+
+
+def stop_llama() -> bool:
+    unit = (config().llamacpp_unit or "").strip()
+    if not unit:
+        return False
+    code, _, _ = run(["systemctl", "--user", "stop", unit], timeout=30)
+    return code == 0
+
+
+def llama_loaded_models() -> list[str]:
+    """Models served by llama-server (managed unit, or any if unmanaged)."""
+    if (config().model_backend or "ollama").lower() not in {"llamacpp", "both"}:
+        return []
+    if llamacpp_managed() and not llama_unit_active():
+        return []
+    models = llamacpp_loaded_models()
+    if llamacpp_managed() and not models:
+        return ["llama-server (loading)"]
+    return models
+
+
+def apply_bot_wake_grace(status: dict, now: float | None = None) -> dict:
+    """Right after a bot wake, drop input-only busy reasons if nobody has
+    touched the PC since the wake. Games and GPU load still count."""
+    grace = float(config().bot_wake_grace_minutes) * 60
+    if grace <= 0:
+        return status
+    try:
+        since = (now if now is not None else time.time()) - woken_flag().stat().st_mtime
+    except OSError:
+        return status
+    if since > grace:
+        return status
+    idle = status.get("idle_seconds")
+    if not isinstance(idle, (int, float)) or idle + 60 < since:
+        return status  # someone touched it after the wake
+    old = list(status.get("reasons") or [])
+    reasons = [r for r in old if not str(r).startswith("recent input")]
+    if len(reasons) == len(old):
+        return status
+    out = dict(status)
+    out["reasons"] = reasons
+    out["busy"] = bool(reasons)
+    return out
+
+
 def loaded_models() -> list[str]:
     backend = (config().model_backend or "ollama").lower()
     models: list[str] = []
     if backend in {"ollama", "both"}:
         models.extend(ollama_loaded_models())
     if backend in {"llamacpp", "both"}:
-        models.extend(llamacpp_loaded_models())
+        models.extend(llama_loaded_models())
     # de-dupe, keep order
     seen = set()
     out = []
@@ -831,6 +933,7 @@ def loaded_models() -> list[str]:
 
 def collect_status() -> dict:
     models = loaded_models()
+    llama_models = llama_loaded_models()
     gpu = gpu_snapshot()
     idle, idle_method = get_idle_seconds()
     games = game_processes()
@@ -864,6 +967,7 @@ def collect_status() -> dict:
         "game_running": bool(games),
         "loaded_models": models,
         "ollama_loaded_models": models,  # compatibility with the original field
+        "llama_loaded_models": llama_models,
         "checked_at": checked,
         "idle_method": idle_method,
     }
@@ -882,6 +986,7 @@ def status_json(status: dict | None = None) -> str:
         "ollama_loaded_models": data.get("ollama_loaded_models")
         or data.get("loaded_models")
         or [],
+        "llama_loaded_models": data.get("llama_loaded_models") or [],
         "checked_at": data["checked_at"],
     }
     return json.dumps(public, indent=2) + "\n"

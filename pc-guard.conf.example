@@ -33,6 +33,17 @@ ollama_host=http://127.0.0.1:11434
 llamacpp_url=http://127.0.0.1:8080
 model_backend=ollama
 
+# Optional on-demand llama.cpp (llama-server). Set model_backend=both (or
+# llamacpp) and the unit below to let pc-guard start llama-server for
+# POST /llama/chat and stop it when the PC turns busy or goes idle.
+# Keep llamacpp_url's port in sync with LLAMA_PORT in llama-server.env.
+# llamacpp_unit=llama-server.service
+# llamacpp_idle_stop_minutes=5
+
+# After a bot wake, ignore "recent input" this long if nobody touched the PC
+# since the wake (resume resets the idle timer). 0 disables.
+bot_wake_grace_minutes=20
+
 # Optional command used instead of `ollama stop`. Receives model names as args.
 # unload_hook=/usr/local/bin/pc-guard-unload
 

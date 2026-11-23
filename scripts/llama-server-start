@@ -1,0 +1,38 @@
+#!/bin/sh
+# Start llama.cpp's llama-server for pc-guard's on-demand llama.cpp backend.
+# OpenAI-compatible API on http://127.0.0.1:$LLAMA_PORT (localhost only; the
+# pc-guard status server proxies authenticated POST /llama/chat to it).
+# Normally run by the llama-server.service user unit, which pc-guard starts
+# for a job and the watcher stops when the PC turns busy or goes idle.
+#
+# Set at least LLAMA_MODEL, in ~/.config/pc-guard/llama-server.env:
+#   LLAMA_MODEL=/path/to/model.gguf
+#
+# MoE models on an 8 GB GPU: keep expert weights in system RAM with
+# LLAMA_N_CPU_MOE (99 = all layers) and keep --no-op-offload. Without it,
+# some looped MoE models (e.g. Inkling 2) need a multi-GB CUDA compute buffer
+# and run out of memory. Lower LLAMA_N_CPU_MOE moves some expert layers onto
+# the GPU for a little more speed if VRAM allows. Example measured on an
+# RTX 2070 Super 8 GB with Inkling 2 Mini IQ4_NL, -ub 64 -c 16384:
+#   LLAMA_N_CPU_MOE=99 -> ~3.2 GB VRAM, ~26 t/s prompt, ~11 t/s generation
+#   LLAMA_N_CPU_MOE=21 -> ~6.3 GB VRAM, ~31 t/s prompt, ~12.7 t/s generation
+set -e
+LLAMA_BIN="${LLAMA_BIN:-$HOME/src/llama.cpp/build/bin/llama-server}"
+if [ -z "${LLAMA_MODEL:-}" ]; then
+  echo "LLAMA_MODEL is not set (path to a .gguf file)" >&2
+  exit 1
+fi
+LLAMA_ALIAS="${LLAMA_ALIAS:-local-model}"
+LLAMA_PORT="${LLAMA_PORT:-8080}"
+LLAMA_CTX="${LLAMA_CTX:-16384}"
+LLAMA_UBATCH="${LLAMA_UBATCH:-64}"
+LLAMA_N_GPU_LAYERS="${LLAMA_N_GPU_LAYERS:-99}"
+LLAMA_N_CPU_MOE="${LLAMA_N_CPU_MOE:-99}"
+LLAMA_REASONING_BUDGET="${LLAMA_REASONING_BUDGET:-0}"
+# shellcheck disable=SC2086
+exec "$LLAMA_BIN" -m "$LLAMA_MODEL" --alias "$LLAMA_ALIAS" \
+  --host 127.0.0.1 --port "$LLAMA_PORT" \
+  -ngl "$LLAMA_N_GPU_LAYERS" --n-cpu-moe "$LLAMA_N_CPU_MOE" --no-op-offload \
+  -ub "$LLAMA_UBATCH" -c "$LLAMA_CTX" --parallel 1 \
+  --no-mmproj --reasoning-budget "$LLAMA_REASONING_BUDGET" \
+  $LLAMA_EXTRA_ARGS

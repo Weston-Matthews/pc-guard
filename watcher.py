@@ -12,6 +12,12 @@
   or a game is running.
 - Does not change Ollama's default keep_alive and does not take a sleep
   inhibitor.
+- If llamacpp_unit is set (an on-demand llama-server systemd --user unit),
+  that unit is stopped when the PC turns busy, or after
+  llamacpp_idle_stop_minutes with no request in progress. A running
+  llama-server blocks auto-suspend like any loaded model.
+- Bot-wake grace: for bot_wake_grace_minutes after a bot wake, "recent
+  input" is ignored when nobody has touched the PC since the wake.
 """
 
 from __future__ import annotations
@@ -61,6 +67,13 @@ def unload_models(models: list[str]) -> list[str]:
     configure a hook if you want it unloaded.
     """
     hook = _hook_path()
+    if pc_guard.llamacpp_managed() and pc_guard.llama_unit_active():
+        llama_models = set(pc_guard.llama_loaded_models())
+        ok = pc_guard.stop_llama()
+        log.info("stopped %s: %s", pc_guard.config().llamacpp_unit, "ok" if ok else "failed")
+        models = [m for m in models if m not in llama_models]
+        if not models:
+            return sorted(llama_models) if ok else []
     if hook:
         code, out, err = pc_guard.run([hook, *models], timeout=30)
         if code == 0:
@@ -186,6 +199,7 @@ def loop() -> None:
     log.info("pc-guard watcher starting (interval %ss)", interval)
     if not pc_guard.last_model_seen_path().exists():
         record_model_seen(time.time())
+    llama_last_active = time.time()
 
     while True:
         try:
@@ -195,7 +209,19 @@ def loop() -> None:
             time.sleep(interval)
             continue
 
+        status = pc_guard.apply_bot_wake_grace(status)
         models = status.get("loaded_models") or status.get("ollama_loaded_models") or []
+        llama_models = status.get("llama_loaded_models") or []
+        if llama_models and pc_guard.llamacpp_managed() and not user_or_game_busy(status):
+            working = pc_guard.llama_processing()
+            if working or working is None:
+                llama_last_active = time.time()  # busy or still loading
+            elif time.time() - llama_last_active >= float(pc_guard.config().llamacpp_idle_stop_minutes) * 60:
+                log.info("llama-server idle for %.0fs; stopping it", time.time() - llama_last_active)
+                log.info("stop %s", "ok" if pc_guard.stop_llama() else "failed")
+                record_model_seen()
+        elif not llama_models:
+            llama_last_active = time.time()
         if models:
             record_model_seen()
             if user_or_game_busy(status):

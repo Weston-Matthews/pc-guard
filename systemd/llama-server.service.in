@@ -1,0 +1,15 @@
+[Unit]
+Description=llama.cpp llama-server (on demand via pc-guard; localhost only)
+# Not enabled at boot. pc-guard starts it for a job; the watcher stops it.
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/pc-guard/llama-server.env
+ExecStart=@INSTALL_DIR@/scripts/llama-server-start
+Restart=no
+TimeoutStopSec=10
+Nice=5
+# Do not take a sleep inhibitor.
+
+[Install]
+WantedBy=default.target

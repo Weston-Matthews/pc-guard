@@ -54,7 +54,7 @@ The watcher does not take a sleep inhibitor, so it does not block the normal ses
 - Linux with **systemd** (user services). Python 3.9+ (stdlib only).
 - **Idle time:** for KDE Plasma, build `idle_helper` (Qt6 or Qt5 plus KIdleTime). On X11, `xprintidle` is a fallback. On GNOME, Mutter's IdleMonitor over D-Bus is a fallback.
 - **GPU:** `nvidia-smi` for NVIDIA. AMD is a limited fallback (`gpu_busy_percent` or `rocm-smi`) without per-process VRAM. Set `gpu_backend=none` to skip GPU checks.
-- **Unload:** `ollama` on PATH, or an `unload_hook` script for llama.cpp / another server.
+- **Unload:** `ollama` on PATH, an on-demand `llamacpp_unit` for llama.cpp (stopped with `systemctl --user stop`), or an `unload_hook` script for another server.
 - **Optional:** Tailscale (for the default bind list), `ufw` or another firewall, `ethtool` and `wakeonlan` if you use Wake-on-LAN from another machine.
 
 ## Install
@@ -130,6 +130,9 @@ See `pc-guard.conf.example`. The main knobs:
 | `model_backend` | `PC_GUARD_MODEL_BACKEND` | `ollama` | `ollama`, `llamacpp`, `both`, or `none` |
 | `ollama_host` | `PC_GUARD_OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama API |
 | `llamacpp_url` | `PC_GUARD_LLAMACPP_URL` | `http://127.0.0.1:8080` | llama-server API |
+| `llamacpp_unit` | `PC_GUARD_LLAMACPP_UNIT` | unset | systemd `--user` unit pc-guard may start/stop for llama.cpp (e.g. `llama-server.service`) |
+| `llamacpp_idle_stop_minutes` | `PC_GUARD_LLAMACPP_IDLE_STOP_MINUTES` | 5 | Stop the managed llama-server after this long with no request running |
+| `bot_wake_grace_minutes` | `PC_GUARD_BOT_WAKE_GRACE_MINUTES` | 20 | After a bot wake, ignore "recent input" if nobody touched the PC since; 0 = off |
 | `unload_hook` | `PC_GUARD_UNLOAD_HOOK` | unset | Command that receives model names |
 | `gpu_backend` | `PC_GUARD_GPU_BACKEND` | `auto` | `auto`, `nvidia`, `amd`, `none` |
 | `game_patterns_extra` | `PC_GUARD_GAME_PATTERNS_EXTRA` | unset | Extra cmdline regexes, comma-separated |
@@ -151,13 +154,33 @@ See `pc-guard.conf.example`. The main knobs:
   "game_running": false,
   "loaded_models": [],
   "ollama_loaded_models": [],
+  "llama_loaded_models": [],
   "checked_at": "2026-11-22T21:00:00-06:00"
 }
 ```
 
+`llama_loaded_models` lists what llama-server is serving (when `model_backend` is `llamacpp` or `both`); with a managed unit it is empty unless that unit is running.
+
 `ollama_loaded_models` is kept as an alias of `loaded_models` for older clients. `busy` is true when `reasons` is non-empty. If the endpoint does not answer, treat the PC as asleep or unreachable and do not assume it is idle.
 
 `POST /mark-woken` is optional. It is served only when `PC_GUARD_WAKE_TOKEN` is set (for example in `~/.config/pc-guard/wake.env`, mode 0600, referenced by the status unit). The request must send `Authorization: Bearer <token>`. On success it writes the `woken-by-bot` flag. The token is never logged. You can also set the flag locally with `scripts/mark-woken`.
+
+### llama.cpp on demand (optional)
+
+pc-guard can run llama-server only when a job arrives, next to (or instead of) Ollama:
+
+1. Build llama.cpp, then copy `examples/llama-server.env.example` to `~/.config/pc-guard/llama-server.env` (mode 0600) and set `LLAMA_MODEL`. `scripts/install-user.sh` installs `llama-server.service` from `systemd/llama-server.service.in` but never enables it.
+2. In `pc-guard.conf`: `model_backend=both`, `llamacpp_unit=llama-server.service`, and `llamacpp_url` on the same port as `LLAMA_PORT`.
+3. Set `PC_GUARD_WAKE_TOKEN` (see above). Then:
+   - `POST /llama/chat` with an OpenAI chat body (`{"messages": [...], "max_tokens": 500}`) and `Authorization: Bearer <token>`. pc-guard returns 409 with `reasons` if the PC is busy; otherwise it unloads any Ollama model to free VRAM, starts the unit, waits for `/health`, and returns llama-server's `/v1/chat/completions` response. One job runs at a time.
+   - `POST /llama/stop` stops the unit.
+4. The watcher stops the unit when the PC turns busy, or after `llamacpp_idle_stop_minutes` with no request in progress. A running llama-server blocks auto-suspend like a loaded Ollama model. llama-server's own VRAM/GPU use is never counted as "busy".
+
+If a caller also uses Ollama, it should `POST /llama/stop` first so both models are not competing for VRAM.
+
+`scripts/llama-server-start` keeps `--no-op-offload` and MoE experts in system RAM by default (`LLAMA_N_CPU_MOE=99`); see the comments there for measured settings on an 8 GB GPU.
+
+**Bot-wake grace.** Resuming from sleep resets the desktop's input-idle timer, so right after a bot wakes the PC `/status` would report "recent input". For `bot_wake_grace_minutes` after the `woken-by-bot` flag is written, the watcher and `/llama/chat` ignore input-only reasons when nobody has touched the PC since the wake. Games and GPU load still count, and `GET /status` itself still reports the raw reasons.
 
 ## How an agent should use it
 
@@ -228,7 +251,7 @@ pc-guard was originally built for a CachyOS desktop running KDE Plasma on Waylan
 | Desktop process ignore list | KDE and common GNOME names are built in | Add your compositor with `desktop_gpu_names_extra` |
 | Game detection | Steam / Proton / Wine / Lutris / Heroic | Add native titles with `game_patterns_extra` |
 | Ollama unload | `ollama stop` plus a keep_alive=0 fallback | Nothing if you already use Ollama |
-| llama.cpp | Detection only | Set `model_backend=llamacpp` or `both`, and an `unload_hook`. The watcher will not kill `llama-server` on its own |
+| llama.cpp | Detection; optional on-demand unit (`llamacpp_unit`) that pc-guard starts and stops | Set `model_backend=llamacpp` or `both`, and either `llamacpp_unit` or an `unload_hook`. Without either, the watcher will not stop a llama-server you started yourself. |
 | Firewall | ufw rule in `sudo-setup.sh` | firewalld/nftables are documented but not applied automatically |
 | Wake-on-LAN | Generic; interface/MAC/broadcast are config | Enable magic-packet wake in firmware and the network manager; install `wakeonlan` on the always-on box |
 | Auto-suspend | `systemctl suspend` | Needs permission to suspend without a password in that user session |
