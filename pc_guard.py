@@ -236,7 +236,9 @@ DEFAULT_GAME_PATTERNS = [
     r"\bwine\d*\.exe\b",
     r"\bproton(?:-|\d|\.|\s|$)",
     r"steamapps/common",
-    r"pressure-vessel",
+    # No bare "pressure-vessel": the Steam client itself now runs in a
+    # pressure-vessel container (steamrt64), so it matched with no game open.
+    # Games in the Steam Linux Runtime still match via steamapps/common.
     r"SteamLinuxRuntime",
     r"\blutris-wrapper\b",
     r"\blutris\b",
