@@ -82,6 +82,47 @@ class GameDetectionTests(unittest.TestCase):
             self.assertIn("gamescope", pc_guard.game_processes())
 
 
+    # Steam client open with no game: the client's own steamrt64 container
+    # (captured from a real system, paths shortened).
+    STEAM_IDLE = [
+        ("1", "bash", "bash /home/u/.local/share/Steam/steam.sh -srt-logger-opened"),
+        ("2", "srt-logger", "/home/u/.local/share/Steam/ubuntu12_32/steam-runtime/usr/libexec/steam-runtime-tools-0/srt-logger --sh-syntax"),
+        ("3", "steam", "/home/u/.local/share/Steam/steamrt64/steam -srt-logger-opened"),
+        ("4", "srt-client-cont", "/home/u/.local/share/Steam/steamrt64/pv-runtime/steam-runtime-steamrt/pressure-vessel/libexec/steam-runtime-tools-0/srt-client-container --pv-option=--terminate-idle-timeout=120"),
+        ("5", "x86_64-linux-gn", "/home/u/.local/share/Steam/steamrt64/pv-runtime/steam-runtime-steamrt/pressure-vessel/libexec/steam-runtime-tools-0/x86_64-linux-gnu-srt-launcher-service --alongside-steam"),
+        ("6", "srt-bwrap", "/home/u/.local/share/Steam/steamrt64/pv-runtime/steam-runtime-steamrt/pressure-vessel/libexec/steam-runtime-tools-0/srt-bwrap --args 26 /usr/lib/pressure-vessel/from-host/libexec/steam-runtime-tools-0/pv-adverb"),
+        ("7", "pv-adverb", "/usr/lib/pressure-vessel/from-host/libexec/steam-runtime-tools-0/pv-adverb --prefix=/usr/lib/pressure-vessel/from-host --generate-locales --fd 11"),
+        ("8", "steamwebhelper", "/home/u/.local/share/Steam/steamrt64/steamwebhelper --type=zygote"),
+        ("9", "oom_reaper", ""),
+    ]
+
+    def test_steam_runtime_container_idle_is_not_a_game(self) -> None:
+        with mock.patch.object(pc_guard, "_proc_texts", return_value=self.STEAM_IDLE):
+            self.assertEqual(pc_guard.game_processes(), [])
+
+    def test_proton_game_alongside_idle_runtime_is_a_game(self) -> None:
+        game = [
+            ("20", "reaper", "/home/u/.local/share/Steam/steamrt64/reaper SteamLaunch AppId=1245620 -- /mnt/games/SteamLibrary/steamapps/common/SteamLinuxRuntime_4/_v2-entry-point --verb=waitforexitandrun -- /mnt/games/SteamLibrary/steamapps/common/Proton - Experimental/proton waitforexitandrun"),
+            ("21", "srt-bwrap", "/mnt/games/SteamLibrary/steamapps/common/SteamLinuxRuntime_4/pressure-vessel/libexec/steam-runtime-tools-0/srt-bwrap --args 26"),
+            ("22", "wineserver", "/mnt/games/SteamLibrary/steamapps/common/Proton - Experimental/files/bin/wineserver"),
+            ("23", "eldenring.exe", "S:\\steamapps\\common\\ELDEN RING\\Game\\eldenring.exe"),
+        ]
+        with mock.patch.object(pc_guard, "_proc_texts", return_value=self.STEAM_IDLE + game):
+            games = pc_guard.game_processes()
+        self.assertIn("reaper", games)
+        self.assertIn("wineserver", games)
+        self.assertNotIn("srt-client-cont", games)
+
+    def test_native_game_in_steam_linux_runtime_is_a_game(self) -> None:
+        game = [
+            ("30", "reaper", "/home/u/.local/share/Steam/ubuntu12_32/reaper SteamLaunch AppId=620 -- /home/u/.local/share/Steam/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point -- /home/u/.local/share/Steam/steamapps/common/Portal 2/portal2.sh"),
+            ("31", "portal2_linux", "/home/u/.local/share/Steam/steamapps/common/Portal 2/portal2_linux -game portal2"),
+        ]
+        with mock.patch.object(pc_guard, "_proc_texts", return_value=self.STEAM_IDLE + game):
+            games = pc_guard.game_processes()
+        self.assertIn("portal2_linux", games)
+
+
 class GpuReasonTests(unittest.TestCase):
     def test_desktop_and_model_vram_ignored(self) -> None:
         gpu = {
